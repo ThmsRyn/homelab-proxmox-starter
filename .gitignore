@@ -1,0 +1,29 @@
+# Secrets and credentials — never commit these
+*.key
+*.pem
+*.p12
+*.pfx
+pve.yml
+*password*
+*credentials*
+*.env
+
+# Backup files created by scripts
+*.bak.*
+*.bak
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.log

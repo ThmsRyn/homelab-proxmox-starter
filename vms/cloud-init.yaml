@@ -1,0 +1,185 @@
+#cloud-config
+# cloud-init.yaml — Example cloud-init user-data for Ubuntu 24.04 on Proxmox VE 9.1
+#
+# Usage with Proxmox:
+#   1. Place this file in a snippets-enabled storage directory:
+#        cp cloud-init.yaml /var/lib/vz/snippets/ubuntu-base.yaml
+#   2. Apply to a VM:
+#        qm set <vmid> --cicustom "user=local:snippets/ubuntu-base.yaml"
+#   3. Regenerate the cloud-init ISO:
+#        qm cloudinit update <vmid>
+#   4. Start or reboot the VM.
+#
+# This file is the "user-data" section only.
+# Proxmox handles "meta-data" (instance ID, hostname) automatically.
+# Proxmox handles "network-config" via --ipconfig0 flags.
+
+# ---------------------------------------------------------------------------
+# System locale and timezone
+# ---------------------------------------------------------------------------
+locale: en_US.UTF-8
+timezone: Europe/Brussels
+
+# ---------------------------------------------------------------------------
+# Hostname
+# Set by Proxmox via --name / meta-data. Defined here as a fallback.
+# ---------------------------------------------------------------------------
+hostname: proxmox-vm
+manage_etc_hosts: true
+fqdn: proxmox-vm.lab.local
+
+# ---------------------------------------------------------------------------
+# Default user
+# Proxmox sets the user via --ciuser. This section extends that user.
+# If you set --ciuser thomas in Proxmox, the username below must match.
+# ---------------------------------------------------------------------------
+users:
+  - name: thomas
+    gecos: Homelab User
+    groups:
+      - sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    # SSH keys are injected by Proxmox via --sshkeys
+    # You can also add them here as a fallback:
+    # ssh_authorized_keys:
+    #   - ssh-ed25519 AAAA... thomas@workstation
+
+# ---------------------------------------------------------------------------
+# SSH configuration
+# ---------------------------------------------------------------------------
+ssh_pwauth: false
+disable_root: true
+
+# ---------------------------------------------------------------------------
+# Package management
+# ---------------------------------------------------------------------------
+package_update: true
+package_upgrade: true
+package_reboot_if_required: true
+
+packages:
+  # System essentials
+  - curl
+  - wget
+  - git
+  - vim
+  - htop
+  - unzip
+  - gnupg
+  - ca-certificates
+  # QEMU guest agent (required for Proxmox integration)
+  - qemu-guest-agent
+  # Network tools
+  - net-tools
+  - iputils-ping
+  - dnsutils
+  # System monitoring
+  - sysstat
+  - iotop
+  # Optional: remove if not needed
+  - fail2ban
+  - ufw
+
+# ---------------------------------------------------------------------------
+# Write files
+# Creates config files on first boot.
+# ---------------------------------------------------------------------------
+write_files:
+  # SSH hardening
+  - path: /etc/ssh/sshd_config.d/99-hardening.conf
+    owner: root:root
+    permissions: '0600'
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      UsePAM yes
+      X11Forwarding no
+      PrintMotd no
+      AcceptEnv LANG LC_*
+      Subsystem sftp /usr/lib/openssh/sftp-server
+      MaxAuthTries 3
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+
+  # UFW default rules
+  - path: /etc/ufw/before.rules.lab
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # Placeholder for custom UFW rules
+      # Applied by runcmd section below
+
+  # System limits
+  - path: /etc/sysctl.d/99-lab.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # Disable IPv6 if not needed in your lab
+      # net.ipv6.conf.all.disable_ipv6 = 1
+      # Reduce swappiness for VM workloads
+      vm.swappiness = 10
+      # Increase file descriptor limits
+      fs.file-max = 100000
+      # Network tuning
+      net.core.somaxconn = 1024
+      net.ipv4.tcp_syncookies = 1
+
+  # Bash aliases for convenience
+  - path: /etc/profile.d/lab-aliases.sh
+    owner: root:root
+    permissions: '0644'
+    content: |
+      alias ll='ls -lah --color=auto'
+      alias gs='git status'
+      alias df='df -h'
+      alias free='free -h'
+
+# ---------------------------------------------------------------------------
+# Run commands on first boot (as root, in order)
+# ---------------------------------------------------------------------------
+runcmd:
+  # Enable and start QEMU guest agent
+  - systemctl enable --now qemu-guest-agent
+
+  # Apply sysctl settings
+  - sysctl -p /etc/sysctl.d/99-lab.conf
+
+  # Configure UFW
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow ssh
+  - ufw --force enable
+
+  # Configure fail2ban for SSH
+  - |
+    cat > /etc/fail2ban/jail.d/sshd.conf << 'EOF'
+    [sshd]
+    enabled = true
+    port    = ssh
+    filter  = sshd
+    logpath = /var/log/auth.log
+    maxretry = 5
+    bantime  = 3600
+    findtime = 600
+    EOF
+  - systemctl enable --now fail2ban
+
+  # Set correct locale
+  - locale-gen en_US.UTF-8
+  - update-locale LANG=en_US.UTF-8
+
+  # Log cloud-init completion
+  - echo "cloud-init provisioning completed at $(date)" >> /var/log/cloud-init-lab.log
+
+# ---------------------------------------------------------------------------
+# Final message — visible in the cloud-init log (/var/log/cloud-init-output.log)
+# ---------------------------------------------------------------------------
+final_message: |
+  Cloud-init setup complete.
+  System: $HOSTNAME
+  Python version: $VERSION
+  Uptime: $UPTIME
+  Run 'sudo cloud-init status' to verify.

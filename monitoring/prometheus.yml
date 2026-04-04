@@ -1,0 +1,175 @@
+# prometheus.yml — Prometheus configuration for Proxmox VE 9.1 homelab monitoring
+#
+# This config scrapes:
+#   - Proxmox VE API metrics via prometheus-pve-exporter (port 9221)
+#   - Host OS metrics via node_exporter on the Proxmox node (port 9100)
+#   - Prometheus self-monitoring (port 9090)
+#
+# Prerequisites:
+#   - prometheus-pve-exporter running on the monitoring VM (192.168.1.15:9221)
+#   - node_exporter running on each Proxmox node (port 9100)
+#   - A read-only Proxmox user configured in /etc/prometheus/pve.yml
+#
+# Documentation:
+#   - pve-exporter: https://github.com/prometheus-pve/prometheus-pve-exporter
+#   - node_exporter: https://github.com/prometheus/node_exporter
+#   - prometheus: https://prometheus.io/docs/prometheus/latest/configuration/configuration/
+
+global:
+  # How often Prometheus scrapes each target
+  scrape_interval: 30s
+
+  # Timeout for each scrape request
+  scrape_timeout: 15s
+
+  # How often Prometheus evaluates alert rules
+  evaluation_interval: 30s
+
+  # Labels added to all time series scraped by this Prometheus instance
+  external_labels:
+    cluster: homelab
+    region: on-premise
+
+# ---------------------------------------------------------------------------
+# Alertmanager configuration (uncomment if Alertmanager is installed)
+# ---------------------------------------------------------------------------
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#             - localhost:9093
+
+# ---------------------------------------------------------------------------
+# Alert rule files
+# ---------------------------------------------------------------------------
+rule_files: []
+# Uncomment and create the file to enable alerting:
+# rule_files:
+#   - /etc/prometheus/alerts/*.yml
+
+# ---------------------------------------------------------------------------
+# Scrape configurations
+# ---------------------------------------------------------------------------
+scrape_configs:
+
+  # --------------------------------------------------------------------------
+  # Prometheus self-monitoring
+  # Scrapes Prometheus's own /metrics endpoint.
+  # --------------------------------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+        labels:
+          instance: monitoring
+          role: prometheus
+
+  # --------------------------------------------------------------------------
+  # Proxmox VE API metrics via prometheus-pve-exporter
+  #
+  # The pve-exporter uses a "target" parameter to know which Proxmox node to
+  # query. The scrape is sent to the exporter (192.168.1.15:9221), which then
+  # queries the Proxmox API on the specified target.
+  #
+  # This configuration uses relabeling to pass the target address to the
+  # exporter as a URL parameter, following the pve-exporter documentation.
+  #
+  # Add one entry per Proxmox node under targets.
+  # --------------------------------------------------------------------------
+  - job_name: pve-node
+    # The actual scrape target is the exporter, not the Proxmox node directly.
+    # The Proxmox node address is passed as a query parameter.
+    metrics_path: /pve
+    params:
+      # The Proxmox API module defined in /etc/prometheus/pve.yml
+      module: [default]
+      # Include per-VM/LXC metrics (set to 1 to enable, 0 for cluster-level only)
+      # cluster: ["1"]
+    static_configs:
+      - targets:
+          # Replace with your Proxmox node IP(s)
+          # For multiple nodes, add one entry per node.
+          - 192.168.1.10   # pve01
+          # - 192.168.1.11  # pve02 (uncomment for a second node)
+        labels:
+          cluster: homelab
+    relabel_configs:
+      # Copy the scraped address into the __param_target label
+      # so pve-exporter knows which Proxmox node to query.
+      - source_labels: [__address__]
+        target_label: __param_target
+      # Keep the Proxmox node address as the "instance" label in metrics.
+      - source_labels: [__param_target]
+        target_label: instance
+      # Redirect the actual HTTP request to the exporter running locally.
+      - target_label: __address__
+        replacement: localhost:9221
+
+  # --------------------------------------------------------------------------
+  # Node Exporter — host OS metrics on Proxmox node(s)
+  #
+  # node_exporter must be installed and running on each Proxmox node.
+  # See monitoring/README.md for installation instructions.
+  # --------------------------------------------------------------------------
+  - job_name: node-pve
+    static_configs:
+      - targets:
+          # One entry per Proxmox node.
+          - 192.168.1.10:9100   # pve01
+          # - 192.168.1.11:9100  # pve02
+        labels:
+          role: hypervisor
+          cluster: homelab
+    relabel_configs:
+      # Strip the port from the instance label for cleaner display in Grafana
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+)(:[0-9]+)?'
+        replacement: '$1'
+
+  # --------------------------------------------------------------------------
+  # Node Exporter — monitoring VM itself
+  # Scrapes the monitoring LXC/VM's own node_exporter.
+  # Install node_exporter on the monitoring LXC the same way as on PVE nodes.
+  # --------------------------------------------------------------------------
+  - job_name: node-monitoring
+    static_configs:
+      - targets:
+          - localhost:9100
+        labels:
+          role: monitoring
+          instance: monitoring
+
+  # --------------------------------------------------------------------------
+  # Optional: Grafana self-monitoring
+  # Uncomment if you want to track Grafana's own health metrics.
+  # --------------------------------------------------------------------------
+  # - job_name: grafana
+  #   static_configs:
+  #     - targets:
+  #         - localhost:3000
+  #       labels:
+  #         instance: monitoring
+
+  # --------------------------------------------------------------------------
+  # Optional: Proxmox Backup Server (PBS) metrics
+  #
+  # PBS exposes Prometheus metrics natively since PBS 2.0.
+  # No exporter needed — just scrape the PBS node directly.
+  # Enable in PBS: Administration > Options > Metric Server > Add > Prometheus
+  # Or scrape the built-in endpoint:
+  # --------------------------------------------------------------------------
+  # - job_name: pbs
+  #   metrics_path: /metrics
+  #   scheme: https
+  #   tls_config:
+  #     insecure_skip_verify: true
+  #   basic_auth:
+  #     username: pbs-metrics@pbs
+  #     password: your-token-here
+  #   static_configs:
+  #     - targets:
+  #         - 192.168.1.20:8007
+  #       labels:
+  #         instance: pbs-01
+  #         role: backup-server
