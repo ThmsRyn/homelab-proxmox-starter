@@ -11,6 +11,7 @@
 #   --storage <id>        Proxmox storage ID to check (e.g. pbs-01, backup-local)
 #   --max-age-hours <n>   Alert if last backup is older than N hours (default: 26)
 #   --notify-email <addr> Send alert email via sendmail (optional)
+#   --exclude-vmid <id>    Skip a VMID/CTID (repeat option as needed)
 #   --dry-run             Only report, do not exit with error code
 #   --help                Show this help message
 #
@@ -36,6 +37,7 @@ SCRIPT_NAME="$(basename "$0")"
 NODE="$(hostname)"
 ALERT_LINES=()
 HAS_STALE=false
+EXCLUDED_VMIDS=()
 
 # ---------------------------------------------------------------------------
 # Color output
@@ -81,6 +83,10 @@ parse_args() {
         NOTIFY_EMAIL="${2:?--notify-email requires a value}"
         shift 2
         ;;
+      --exclude-vmid)
+        EXCLUDED_VMIDS+=("${2:?--exclude-vmid requires a value}")
+        shift 2
+        ;;
       --dry-run)
         DRY_RUN=true
         shift
@@ -94,6 +100,17 @@ parse_args() {
         ;;
     esac
   done
+}
+
+is_excluded_vmid() {
+  local vmid="$1"
+  local excluded
+  for excluded in "${EXCLUDED_VMIDS[@]}"; do
+    if [[ "$excluded" == "$vmid" ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -204,6 +221,7 @@ main() {
   log_info "Node        : $NODE"
   log_info "Storage     : $STORAGE"
   log_info "Max age     : ${MAX_AGE_HOURS}h"
+  log_info "Excluded    : ${EXCLUDED_VMIDS[*]:-(none)}"
   log_info "Dry-run     : $DRY_RUN"
   echo
 
@@ -222,6 +240,11 @@ main() {
   echo
 
   for vmid in "${vmids[@]}"; do
+    if is_excluded_vmid "$vmid"; then
+      log_info "VMID $vmid skipped (--exclude-vmid)"
+      continue
+    fi
+
     local latest_epoch
     latest_epoch=$(get_latest_backup_epoch "$vmid")
 
